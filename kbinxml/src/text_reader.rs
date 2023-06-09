@@ -4,6 +4,7 @@ use std::str::{self, Utf8Error};
 use bytes::{BufMut, Bytes, BytesMut};
 use quick_xml::events::attributes::Attributes;
 use quick_xml::events::{BytesStart, BytesText, Event};
+use quick_xml::name::QName;
 use quick_xml::Error as QuickXmlError;
 use quick_xml::Reader;
 use snafu::{ResultExt, Snafu};
@@ -137,32 +138,32 @@ impl<'a> TextXmlReader<'a> {
         for attr in attrs {
             match attr {
                 Ok(attr) => {
-                    let value = match attr.unescaped_value() {
-                        Ok(v) => v,
+                    let value: Vec<u8> = match attr.unescape_value() {
+                        Ok(v) => String::from(v).into_bytes(),
                         Err(e) => {
                             error!("Error decoding attribute value: {:?}", e);
-                            attr.value.clone()
+                            attr.value.to_vec()
                         },
                     };
 
-                    if attr.key == b"__type" {
+                    if attr.key == QName(b"__type") {
                         let value = str::from_utf8(&*value)?;
 
                         node_type =
                             Some(StandardType::from_name(value).context(InvalidKbinTypeSnafu)?);
-                    } else if attr.key == b"__count" {
+                    } else if attr.key == QName(b"__count") {
                         let value = str::from_utf8(&*value)?;
                         let num_count = value.parse::<u32>().context(ParseArrayCountSnafu)?;
 
                         count = num_count as usize;
-                    } else if attr.key == b"__size" {
+                    } else if attr.key == QName(b"__size") {
                         let value = str::from_utf8(&*value)?
                             .parse::<usize>()
                             .context(ParseBinarySizeSnafu)?;
 
                         size = Some(value);
                     } else {
-                        let definition = self.parse_attribute(attr.key, &value)?;
+                        let definition = self.parse_attribute(attr.key.into_inner(), &value)?;
                         attributes.push(definition);
                     }
                 },
@@ -199,7 +200,7 @@ impl<'a> TextXmlReader<'a> {
         let data = NodeData::Some {
             key: Key::Uncompressed {
                 encoding: self.encoding,
-                data: Bytes::from(e.name().to_vec()),
+                data: Bytes::from(e.name().into_inner().to_vec()),
             },
             value_data,
         };
@@ -216,7 +217,7 @@ impl<'a> TextXmlReader<'a> {
         count: usize,
         size: Option<usize>,
     ) -> Result<(), TextReaderError> {
-        let data = event.unescaped()?;
+        let data = event.unescape()?;
         let data = match definition.node_type {
             StandardType::String | StandardType::NodeStart => {
                 let mut data = BytesMut::from(&*data);
@@ -228,7 +229,7 @@ impl<'a> TextXmlReader<'a> {
                 data.freeze()
             },
             node_type => {
-                let text = str::from_utf8(&*data)?;
+                let text = &*data;
                 let value = Value::from_string(node_type, text, definition.is_array, count)
                     .context(ValueDecodeSnafu { node_type })?;
 
@@ -273,7 +274,7 @@ impl<'a> TextXmlReader<'a> {
         let mut buf = Vec::with_capacity(1024);
 
         loop {
-            match self.xml_reader.read_event(&mut buf)? {
+            match self.xml_reader.read_event_into(&mut buf)? {
                 Event::Start(e) => {
                     let start = self.handle_start(e)?;
                     self.stack.push(start);
